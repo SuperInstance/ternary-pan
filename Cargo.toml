@@ -1,4 +1,6 @@
 [package]
+description = "ternary-pan - SuperInstance ecosystem crate"
+repository = "https://github.com/SuperInstance/ternary-pan"
 name = "ternary-pan"
 version = "0.1.0"
 edition = "2021"

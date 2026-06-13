@@ -1,73 +1,130 @@
 # ternary-pan
 
-**Three positions in stereo space. Hard left, dead center, hard right. Every ternary signal is a panning map.**
+Stereo panning and spatial audio distribution for ternary {-1, 0, +1} signals. Maps ternary values to pan positions with linear, equal-power, and constant-power pan laws, plus auto-panning and multi-agent surround placement.
 
-Panning is where a sound sits in the stereo field. Left ear, right ear, or both equally — that's the spatial dimension of audio, reduced to its simplest form. In ternary, the three states map perfectly to three pan positions: `-1 = full left`, `0 = center`, `+1 = full right`. A ternary signal isn't just data — it's a sequence of spatial positions. A melody that moves through {-1, 0, +1} is a sound that moves through space.
+## Why It Matters
 
-This crate provides panning, auto-pan (spatial sweep driven by a ternary rhythm), surround distribution (spread N agents across the field), and stereo processing with gain computation.
+In ternary agent systems, the three states {-1, 0, +1} map naturally to spatial positions in a stereo field: left, center, right. This crate provides the signal-processing primitives to:
 
-## What's Inside
+- **Spatialize agent populations**: distribute N agents across the stereo field
+- **Pan signals with physical accuracy**: choose the pan law that matches your psychoacoustic model
+- **Auto-pan with rhythmic control**: ternary patterns drive LFO-like panning sweeps
+- **Generate interleaved stereo** from mono ternary signals
 
-- **`Pan`** — panning position in [-1.0, +1.0]. Construct from ternary: `Pan::from_ternary(1)` = right
-- **`to_stereo_gains()`** — linear pan law: compute (left_gain, right_gain). Center = (0.5, 0.5)
-- **`pan_position(signal)`** — map a ternary signal to panning positions
-- **`auto_pan(rhythm, sweep_width)`** — sweep across the stereo field driven by a ternary rhythm
-- **`surround(agent_count)`** — distribute N agents evenly from left to right
-- **`stereo_process(signal, pan)`** — apply panning to a ternary signal, produce (left, right) channels
+The choice of pan law is critical for perceived loudness consistency as sources move across the field.
 
-## Quick Example
+## How It Works
+
+### Pan Position
+
+A pan value $p \in [-1, +1]$ where -1 = full left, 0 = center, +1 = full right. The ternary mapping is direct:
+
+$$\{-1 \mapsto L,\; 0 \mapsto C,\; +1 \mapsto R\}$$
+
+### Linear Pan Law
+
+Simple linear crossfade:
+
+$$g_L = \frac{1 - p}{2}, \quad g_R = \frac{1 + p}{2}$$
+
+**Power ratio:** at center, each channel carries 50% power (-6 dB). Total power varies with pan position — sources sound quieter at center.
+
+### Equal-Power Pan Law
+
+Constant total power across the stereo field:
+
+$$g_L = \cos\!\left(\frac{p+1}{2} \cdot \frac{\pi}{2}\right), \quad g_R = \sin\!\left(\frac{p+1}{2} \cdot \frac{\pi}{2}\right)$$
+
+At center: $g_L = g_R = \cos(\pi/4) \approx 0.707$ (-3 dB per channel), total power = 1. **Preferred for most mixing applications.**
+
+### Constant-Power Pan Law
+
+Square-root crossfade ensuring $g_L^2 + g_R^2 = 1$ for all $p$:
+
+$$g_L = \sqrt{1 - t}, \quad g_R = \sqrt{t}, \quad \text{where } t = \frac{p+1}{2}$$
+
+Equivalent to equal-power but parameterized differently. At center: both gains ≈ 0.707.
+
+**Verification:**
+
+$$g_L^2 + g_R^2 = (1-t) + t = 1 \quad \forall\; t$$
+
+### Auto-Pan
+
+Given a rhythm pattern $\{r_i\} \in \{-1, 0, +1\}$, the pan position accumulates:
+
+$$\text{pos}(i) = \text{clamp}\!\left(\text{pos}(i-1) + \frac{r_i \cdot w}{N},\;-1,\;+1\right)$$
+
+where $w$ is the sweep width and $N$ is the pattern length.
+
+### Surround Distribution
+
+For $k$ agents, evenly distribute across the stereo field:
+
+$$\text{pos}_i = -1 + \frac{2i}{k-1}, \quad i = 0, 1, \ldots, k-1$$
+
+**Complexity:** O(k).
+
+## Quick Start
 
 ```rust
 use ternary_pan::*;
 
-// Three pan positions from ternary values
-assert_eq!(Pan::from_ternary(-1), Pan::left());    // full left
-assert_eq!(Pan::from_ternary(0), Pan::center());   // dead center
-assert_eq!(Pan::from_ternary(1), Pan::right());    // full right
+// Map ternary signal to pan positions
+let signal = &[-1i8, 0, 1];
+let pans = pan_position(signal);
+assert_eq!(pans[0], Pan::left());
+assert_eq!(pans[1], Pan::center());
 
-// Stereo gains for each position
-let (l, r) = Pan::left().to_stereo_gains();
-assert_eq!((l, r), (1.0, 0.0)); // all left, no right
+// Equal-power panning at center
+let (l, r) = pan_law_equal_power(Pan::center());
+assert!((l - r).abs() < 0.01);
 
-let (l, r) = Pan::center().to_stereo_gains();
-assert_eq!((l, r), (0.5, 0.5)); // equal in both
+// Constant-power: l² + r² = 1
+let (l, r) = pan_law_constant_power(Pan(0.3));
+assert!((l*l + r*r - 1.0).abs() < 0.01);
 
-// Auto-pan: rhythm drives spatial movement
-let rhythm = vec![1, 0, -1, 0]; // right → center → left → center
-let sweeps = auto_pan(&rhythm, 1.0);
-
-// Distribute 5 agents across the field
+// Distribute 5 agents across stereo field
 let positions = surround(5);
-// Left, Left-Center, Center, Right-Center, Right
+assert_eq!(positions[0], Pan::left());
+assert_eq!(positions[4], Pan::right());
+
+// Auto-pan with ternary rhythm
+let rhythm = &[1i8, 1, -1, 0, 1, -1];
+let sweep = auto_pan(rhythm, 1.0);
+
+// Apply pan to produce interleaved stereo
+let stereo = apply_pan(&[100i8, -50, 75], Pan::center());
+// [L0, R0, L1, R1, L2, R2]
 ```
 
-## The Deeper Truth
+## API
 
-**Ternary panning is pixel-art spatial positioning.** Three pan positions — left, center, right — creates a spatial texture where sounds *snap* to positions rather than gliding. This is the audio equivalent of pixel art: deliberate, chunky, distinctive. It's the sound of early video games, where every sound effect was panned hard left, hard right, or dead center. There's no subtlety — and that's the point.
+| Function | Description |
+|---|---|
+| `Pan::left() / center() / right()` | Canonical pan positions |
+| `Pan::from_ternary(i8)` | Map {-1, 0, +1} → pan position |
+| `.to_stereo_gains() → (f64, f64)` | Linear pan law gains |
+| `pan_law_linear(Pan) → (f64, f64)` | Linear crossfade |
+| `pan_law_equal_power(Pan) → (f64, f64)` | Cosine/sine panning |
+| `pan_law_constant_power(Pan) → (f64, f64)` | Square-root panning |
+| `pan_position(signal) → Vec<Pan>` | Map ternary signal to pan positions |
+| `auto_pan(rhythm, width) → Vec<Pan>` | Accumulating sweep from ternary pattern |
+| `surround(n) → Vec<Pan>` | Even spatial distribution of n agents |
+| `apply_pan(signal, Pan) → Vec<i8>` | Interleaved stereo output |
 
-When you need smooth movement, use `auto_pan` with continuous accumulation (the pan position drifts gradually, driven by the ternary rhythm). When you want the raw three-position aesthetic — sounds teleporting between speakers — use `from_ternary` directly. Both approaches are valid. Both sound completely different.
+## Architecture Notes
 
-**Use cases:**
-- **Audio spatialization** — place sounds in stereo space with ternary control
-- **Game audio** — quick spatial positioning for sound effects
-- **Music production** — auto-pan effects driven by ternary rhythms
-- **Multi-agent sonification** — each agent gets a position in the field
-- **Accessibility** — ternary spatial cues (left/center/right) are easy to perceive
+Stereo panning embodies the **γ + η = C** identity through energy conservation. The left channel carries the constructive mass γ (positive pan direction), the right channel carries the inhibitory mass η (negative pan direction), and the center (neutral) distributes energy equally. Under the constant-power law, $g_L^2 + g_R^2 = 1$ is exactly the conservation bound $C = 1$ — no matter where the source is placed, the total acoustic energy is invariant.
 
-## See Also
+This makes constant-power panning the natural choice for ternary systems: moving an agent from left to right converts γ-mass to η-mass (or vice versa) while preserving $C$, exactly as the conservation identity demands.
 
-- **ternary-mixer** — blend panned signals together
-- **ternary-echo** — echo creates depth (front/back), pan creates width (left/right)
-- **ternary-vu** — meter the output of panned signals
-- **ternary-wave** — generate the signals you're panning
-- **ternary-crossfader** — crossfading is a 1D spatial operation
-- **ternary-rack** — wire pan modules into a modular synth
+## References
 
-## Install
-
-```bash
-cargo add ternary-pan
-```
+- Ballou, G. M. (2013). *Handbook for Sound Engineers.* 4th ed. Focal Press. (Pan laws)
+- Pulkki, V. (2001). *Spatial Sound Generation and Perception by Amplitude Panning Techniques.* AES Convention Paper.
+- Moore, B. C. J. (2012). *An Introduction to the Psychology of Hearing.* 6th ed. Brill. (Psychoacoustics)
+- Roads, C. (1996). *The Computer Music Tutorial.* MIT Press.
 
 ## License
 
